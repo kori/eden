@@ -2,7 +2,7 @@
 name = "eden"
 description = "EDN parser"
 license = "ISC"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Luiz de Milon <luiz.de.milon@gmail.com>"]
 edition = "2018"
 
