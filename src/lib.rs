@@ -33,136 +33,10 @@ pub struct Tagged {
     element: Box<Element>,
 }
 
-pub mod parser_helpers {
-    use super::{Element, Tagged};
-
-    use nom;
-    use nom::IResult;
-
-    pub fn parse_char<'a, E>(i: &'a str) -> IResult<&'a str, char, E>
-    where
-        E: nom::error::ParseError<&'a str>
-            + nom::error::FromExternalError<&'a str, std::num::ParseIntError>,
-    {
-        let parse_hexdigit =
-            nom::bytes::streaming::take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
-
-        // `preceeded` takes a prefix parser, and if it succeeds, returns the result
-        // of the body parser. In this case, it parses uNNNN.
-        let parse_hextag =
-            nom::sequence::preceded(nom::character::streaming::char('u'), parse_hexdigit);
-
-        let parse_u32 =
-            nom::combinator::map_res(parse_hextag, move |hex| u32::from_str_radix(hex, 16));
-
-        nom::combinator::map_opt(parse_u32, |value| std::char::from_u32(value))(i)
-    }
-
-    pub fn parse_escaped_char<'a, E>(i: &'a str) -> IResult<&'a str, char, E>
-    where
-        E: nom::error::ParseError<&'a str>
-            + nom::error::FromExternalError<&'a str, std::num::ParseIntError>,
-    {
-        use nom::character::streaming::char;
-        use nom::combinator::value;
-
-        // parse chars that are preceded by \
-        nom::sequence::preceded(
-            nom::character::streaming::char('\\'),
-            nom::branch::alt((
-                parse_char,
-                value('\n', char('n')),
-                value('\r', char('r')),
-                value('\t', char('t')),
-                value('\u{08}', char('a')),
-                value('\u{0C}', char('f')),
-                value('\\', char('\\')),
-                value('/', char('/')),
-                value('"', char('"')),
-            )),
-        )(i)
-    }
-
-    pub fn parse_escaped_whitespace<'a, E: nom::error::ParseError<&'a str>>(
-        i: &'a str,
-    ) -> IResult<&'a str, &str, E> {
-        use nom::character::streaming::{char, multispace1};
-
-        nom::sequence::preceded(char('\\'), multispace1)(i)
-    }
-
-    pub fn parse_literal<'a, E: nom::error::ParseError<&'a str>>(
-        i: &'a str,
-    ) -> IResult<&'a str, &str, E> {
-        use nom::bytes::streaming::is_not;
-        use nom::combinator::verify;
-
-        let not_quote_slash = is_not("\"\\");
-
-        verify(not_quote_slash, |s: &str| !s.is_empty())(i)
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum StringFragment<'a> {
-        Literal(&'a str),
-        EscapedChar(char),
-        EscapedWS,
-    }
-
-    pub fn parse_fragment<'a, E>(input: &'a str) -> IResult<&'a str, StringFragment<'a>, E>
-    where
-        E: nom::error::ParseError<&'a str>
-            + nom::error::FromExternalError<&'a str, std::num::ParseIntError>,
-    {
-        use nom::branch::alt;
-        use nom::combinator::{map, value};
-
-        alt((
-            map(parse_literal, StringFragment::Literal),
-            map(parse_escaped_char, StringFragment::EscapedChar),
-            value(StringFragment::EscapedWS, parse_escaped_whitespace),
-        ))(input)
-    }
-
-    pub fn parse_string<'a, E>(i: &'a str) -> IResult<&'a str, String, E>
-    where
-        E: nom::error::ParseError<&'a str>
-            + nom::error::FromExternalError<&'a str, std::num::ParseIntError>,
-    {
-        use nom::character::streaming::char;
-        use nom::multi::fold_many0;
-        use nom::sequence::delimited;
-
-        // fold_many0 is the equivalent of iterator::fold. It runs a parser in a loop,
-        // and for each output value, calls a folding function on each output value.
-        let build_string = fold_many0(
-            parse_fragment,
-            // Our init value, an empty string
-            String::new(),
-            // Our folding function. For each fragment, append the fragment to the
-            // string.
-            |mut string, fragment| {
-                match fragment {
-                    StringFragment::Literal(s) => string.push_str(s),
-                    StringFragment::EscapedChar(c) => string.push(c),
-                    StringFragment::EscapedWS => {}
-                }
-                string
-            },
-        );
-
-        // Finally, parse the string. Note that, if `build_string` could accept a raw
-        // " character, the closing delimiter " would never match. When using
-        // `delimited` with a looping parser (like fold_many0), be sure that the
-        // loop won't accidentally match your closing delimiter!
-        delimited(char('"'), build_string, char('"'))(i)
-    }
-}
 
 pub mod parsers {
     use super::{Element, Tagged};
 
-    use nom;
     use nom::IResult;
 
     // these references are directly from https://github.com/edn-format/edn
@@ -170,14 +44,14 @@ pub mod parsers {
     //// basic types
     // nil represents nil, null or nothing.
     // It should be read as an object with similar meaning on the target platform.
-    fn nil<'a>(input: &'a str) -> IResult<&'a str, Element> {
+    pub fn nil<'a>(input: &'a str) -> IResult<&'a str, Element> {
         nom::combinator::value(Element::Nil, nom::bytes::streaming::tag("nil"))(input)
     }
 
     // true and false should be mapped to booleans.
     // If a platform has canonic values for true and false, it is a further semantic of booleans
     // that all instances of true yield that (identical) value, and similarly for false.
-    fn boolean<'a>(input: &'a str) -> IResult<&'a str, Element> {
+    pub fn boolean<'a>(input: &'a str) -> IResult<&'a str, Element> {
         use nom::bytes::streaming::tag;
         use nom::combinator::value;
 
@@ -191,37 +65,13 @@ pub mod parsers {
     // Characters are preceded by a backslash:
     // \c, \newline, \return, \space and \tab yield the corresponding characters.
     fn character<'a>(input: &'a str) -> IResult<&'a str, Element> {
-        use nom::bytes::streaming::take_while_m_n;
-        use nom::character::streaming::char;
-        use nom::combinator;
-        use nom::sequence::preceded;
-
-        let parse_hexdigit = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
-
-        // `preceeded` takes a prefix parser, and if it succeeds, returns the result
-        // of the body parser. In this case, it parses uNNNN.
-        let parse_hex = preceded(char('u'), parse_hexdigit);
-
-        // transform str into u32
-        let parse_unicode = combinator::map_res(parse_hex, move |hex| u32::from_str_radix(hex, 16));
-
-        // get the actual unicode char
-        let parse_char = preceded(
-            char('\\'),
-            combinator::map_opt(parse_unicode, |value| std::char::from_u32(value)),
-        );
-
-        combinator::map(parse_char, |c| Element::Character(c))(input)
+        nom::combinator::value(Element::Nil, nom::bytes::streaming::tag("nil"))(input)
     }
 
     // Strings are enclosed in "double quotes". May span multiple lines.
     // Standard C/Java escape characters \t, \r, \n, \\ and \" are supported.
     pub fn string<'a>(input: &'a str) -> IResult<&str, Element> {
-        use super::parser_helpers;
-
-        nom::combinator::map(parser_helpers::parse_string, |s| {
-            Element::String(String::from(s))
-        })(input)
+        nom::combinator::value(Element::Nil, nom::bytes::streaming::tag("nil"))(input)
     }
 
     // Symbols begin with a non-numeric character and can contain alphanumeric characters and
@@ -342,5 +192,28 @@ pub mod parsers {
 
     fn tag(input: &str) -> IResult<&str, Element> {
         nom::combinator::value(Element::Nil, nom::bytes::streaming::tag("nil"))(input)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nil() {
+        let goal = Ok(("", Element::Nil));
+        assert_eq!(parsers::nil("nil")), goal);
+    }
+
+    #[test]
+    fn test_boolean_true() {
+        let goal = Ok(("", Element::Boolean(true)));
+        assert_eq!(parsers::boolean("true"), goal);
+    }
+
+    #[test]
+    fn test_boolean_false() {
+        let goal = Ok(("", Element::Boolean(false)));
+        assert_eq!(parsers::boolean("false"), goal);
     }
 }
