@@ -63,20 +63,45 @@ pub mod parsers {
     // Unicode characters are represented with \uNNNN as in Java. Backslash cannot be followed by whitespace.
     // Characters are preceded by a backslash:
     // \c, \newline, \return, \space and \tab yield the corresponding characters.
+
+    // the EDN spec is incomplete, so [1] was used as a reference.
+    // The longform parser is a deviation from the(non-)spec and the "reference implementation."
+    
+    // [1]: https://github.com/clojure/clojure/blob/12e976ca3b07d7434ad4571a6bbeb05ef45d49b4/src/jvm/clojure/lang/EdnReader.java#L601
+
     pub fn character(input: &str) -> IResult<&str, Element> {
         use nom::bytes::streaming::{tag, take_while_m_n};
         use nom::character::streaming::char;
         use nom::combinator::{map_opt, map_res, value};
         use nom::error::{FromExternalError, ParseError};
-        use nom::sequence::preceded;
+        use nom::sequence::{delimited, preceded};
 
-        fn parse_unicode<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
+        // to parse the shortform \uXXXX
+        fn parse_fourchar_unicode<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
+        where
+            E: ParseError<&'a str> + FromExternalError<&'a str, std::num::ParseIntError>,
+        {
+            let parse_hex = take_while_m_n(1, 4, |c: char| c.is_ascii_hexdigit());
+            let parse_unicode_prefix = preceded(char('u'), parse_hex);
+            let parse_u32 = map_res(parse_unicode_prefix, move |hex| {
+                u32::from_str_radix(hex, 16)
+            });
+
+            map_opt(parse_u32, std::char::from_u32)(input)
+        }
+
+        // to parse the longform \u{XXXXXX}, because emojis are cool
+        fn parse_delimited_unicode<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
         where
             E: ParseError<&'a str> + FromExternalError<&'a str, std::num::ParseIntError>,
         {
             let parse_hex = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
-            let parse_unicode_prefix = preceded(char('u'), parse_hex);
-            let parse_u32 = map_res(parse_unicode_prefix, move |hex| {
+
+            let parse_delimited_hex = preceded(
+                char('u'),
+                delimited(char('{'), parse_hex, char('}')),
+            );
+            let parse_u32 = map_res(parse_delimited_hex, move |hex| {
                 u32::from_str_radix(hex, 16)
             });
 
@@ -86,7 +111,8 @@ pub mod parsers {
         match preceded(
             char('\\'),
             nom::branch::alt((
-                parse_unicode,
+                parse_fourchar_unicode,
+                parse_delimited_unicode,
                 value(' ', tag("space")),
                 value('\n', tag("newline")),
                 value('\r', tag("return")),
@@ -273,19 +299,27 @@ mod tests {
         assert_eq!(parsers::character("\\tab a"), goal3);
     }
 
-    // TODO: figure out why \u6c37 broke and \u006c37 didn't
+    #[test]
+    fn test_simple_characters() {
+        let goal1 = Ok(("", Element::Character('a')));
+        assert_eq!(parsers::character("\\u0061"), goal1);
+        let goal2 = Ok(("", Element::Character('0')));
+        assert_eq!(parsers::character("\\u0030"), goal2);
+
+    }
+
     #[test]
     fn test_character_unicode() {
         let goal1 = Ok(("", Element::Character('氷')));
         assert_eq!(parsers::character("\\u6c37"), goal1);
-        let goal2 = Ok(("", Element::Character('氷')));
+        // Careful! this will parse \u006c, then '37' will be left over.
+        let goal2 = Ok(("37", Element::Character('l')));
         assert_eq!(parsers::character("\\u006c37"), goal2);
     }
 
-    // TODO: figure out why \u01f600 works and \u1f600 doesn't
     #[test]
     fn test_character_unicode_emoji() {
         let goal1 = Ok(("", Element::Character('😀')));
-        assert_eq!(parsers::character("\\u01f600"), goal1);
+        assert_eq!(parsers::character("\\u{1f600}"), goal1);
     }
 }
