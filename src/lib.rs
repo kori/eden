@@ -279,7 +279,7 @@ mod tests {
         let goal1 = Ok(("", Element::Character('氷')));
         assert_eq!(parsers::character("\\u6c37"), goal1);
         let goal2 = Ok(("", Element::Character('氷')));
-        assert_eq!(parsers::character("\\00u6c37"), goal2);
+        assert_eq!(parsers::character("\\u006c37"), goal2);
     }
 
     // TODO: figure out why \u01f600 works and \u1f600 doesn't
