@@ -66,7 +66,6 @@ pub mod parsers {
 
     // the EDN spec is incomplete, so [1] was used as a reference.
     // The longform parser is a deviation from the(non-)spec and the "reference implementation."
-    
     // [1]: https://github.com/clojure/clojure/blob/12e976ca3b07d7434ad4571a6bbeb05ef45d49b4/src/jvm/clojure/lang/EdnReader.java#L601
 
     pub fn character(input: &str) -> IResult<&str, Element> {
@@ -97,13 +96,9 @@ pub mod parsers {
         {
             let parse_hex = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
 
-            let parse_delimited_hex = preceded(
-                char('u'),
-                delimited(char('{'), parse_hex, char('}')),
-            );
-            let parse_u32 = map_res(parse_delimited_hex, move |hex| {
-                u32::from_str_radix(hex, 16)
-            });
+            let parse_delimited_hex =
+                preceded(char('u'), delimited(char('{'), parse_hex, char('}')));
+            let parse_u32 = map_res(parse_delimited_hex, move |hex| u32::from_str_radix(hex, 16));
 
             map_opt(parse_u32, std::char::from_u32)(input)
         }
@@ -300,26 +295,25 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_characters() {
+    fn test_character_shortform() {
         let goal1 = Ok(("", Element::Character('a')));
         assert_eq!(parsers::character("\\u0061"), goal1);
         let goal2 = Ok(("", Element::Character('0')));
         assert_eq!(parsers::character("\\u0030"), goal2);
-
-    }
-
-    #[test]
-    fn test_character_unicode() {
-        let goal1 = Ok(("", Element::Character('氷')));
-        assert_eq!(parsers::character("\\u6c37"), goal1);
+        let goal3 = Ok(("", Element::Character('氷')));
+        assert_eq!(parsers::character("\\u6c37"), goal3);
         // Careful! this will parse \u006c, then '37' will be left over.
-        let goal2 = Ok(("37", Element::Character('l')));
-        assert_eq!(parsers::character("\\u006c37"), goal2);
+        let goal4 = Ok(("37", Element::Character('l')));
+        assert_eq!(parsers::character("\\u006c37"), goal4);
     }
 
     #[test]
-    fn test_character_unicode_emoji() {
-        let goal1 = Ok(("", Element::Character('😀')));
-        assert_eq!(parsers::character("\\u{1f600}"), goal1);
+    fn test_character_longform() {
+        // with the longform syntax, test_character_shortform goal4 works as expected.
+        let goal1 = Ok(("", Element::Character('氷')));
+        assert_eq!(parsers::character("\\u{006c37}"), goal1);
+
+        let goal2 = Ok(("", Element::Character('😀')));
+        assert_eq!(parsers::character("\\u{1f600}"), goal2);
     }
 }
