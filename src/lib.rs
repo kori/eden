@@ -33,7 +33,6 @@ pub struct Tagged {
     element: Box<Element>,
 }
 
-
 pub mod parsers {
     use super::{Element, Tagged};
 
@@ -44,14 +43,14 @@ pub mod parsers {
     //// basic types
     // nil represents nil, null or nothing.
     // It should be read as an object with similar meaning on the target platform.
-    pub fn nil<'a>(input: &'a str) -> IResult<&'a str, Element> {
+    pub fn nil(input: &str) -> IResult<&str, Element> {
         nom::combinator::value(Element::Nil, nom::bytes::streaming::tag("nil"))(input)
     }
 
     // true and false should be mapped to booleans.
     // If a platform has canonic values for true and false, it is a further semantic of booleans
     // that all instances of true yield that (identical) value, and similarly for false.
-    pub fn boolean<'a>(input: &'a str) -> IResult<&'a str, Element> {
+    pub fn boolean(input: &str) -> IResult<&str, Element> {
         use nom::bytes::streaming::tag;
         use nom::combinator::value;
 
@@ -64,8 +63,40 @@ pub mod parsers {
     // Unicode characters are represented with \uNNNN as in Java. Backslash cannot be followed by whitespace.
     // Characters are preceded by a backslash:
     // \c, \newline, \return, \space and \tab yield the corresponding characters.
-    fn character<'a>(input: &'a str) -> IResult<&'a str, Element> {
-        nom::combinator::value(Element::Nil, nom::bytes::streaming::tag("nil"))(input)
+    pub fn character(input: &str) -> IResult<&str, Element> {
+        use nom::bytes::streaming::{tag, take_while_m_n};
+        use nom::character::streaming::char;
+        use nom::combinator::{map_opt, map_res, value};
+        use nom::error::{FromExternalError, ParseError};
+        use nom::sequence::preceded;
+
+        fn parse_unicode<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
+        where
+            E: ParseError<&'a str> + FromExternalError<&'a str, std::num::ParseIntError>,
+        {
+            let parse_hex = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
+            let parse_unicode_prefix = preceded(char('u'), parse_hex);
+            let parse_u32 = map_res(parse_unicode_prefix, move |hex| {
+                u32::from_str_radix(hex, 16)
+            });
+
+            map_opt(parse_u32, std::char::from_u32)(input)
+        }
+
+        match preceded(
+            char('\\'),
+            nom::branch::alt((
+                parse_unicode,
+                value(' ', tag("space")),
+                value('\n', tag("newline")),
+                value('\r', tag("return")),
+                value('\t', tag("tab")),
+            )),
+        )(input)
+        {
+            Ok((r, c)) => Ok((r, Element::Character(c))),
+            Err(e) => Err(e),
+        }
     }
 
     // Strings are enclosed in "double quotes". May span multiple lines.
@@ -202,7 +233,7 @@ mod tests {
     #[test]
     fn test_nil() {
         let goal = Ok(("", Element::Nil));
-        assert_eq!(parsers::nil("nil")), goal);
+        assert_eq!(parsers::nil("nil"), goal);
     }
 
     #[test]
@@ -215,5 +246,46 @@ mod tests {
     fn test_boolean_false() {
         let goal = Ok(("", Element::Boolean(false)));
         assert_eq!(parsers::boolean("false"), goal);
+    }
+
+    #[test]
+    fn test_character_space() {
+        let goal = Ok(("", Element::Character(' ')));
+        assert_eq!(parsers::character("\\space"), goal);
+    }
+    #[test]
+    fn test_character_newline() {
+        let goal = Ok(("", Element::Character('\n')));
+        assert_eq!(parsers::character("\\newline"), goal);
+    }
+    #[test]
+    fn test_character_return() {
+        let goal = Ok(("", Element::Character('\r')));
+        assert_eq!(parsers::character("\\return"), goal);
+    }
+    #[test]
+    fn test_character_tab() {
+        let goal1 = Ok(("", Element::Character('\t')));
+        assert_eq!(parsers::character("\\tab"), goal1);
+        let goal2 = Ok(("a", Element::Character('\t')));
+        assert_eq!(parsers::character("\\taba"), goal2);
+        let goal3 = Ok((" a", Element::Character('\t')));
+        assert_eq!(parsers::character("\\tab a"), goal3);
+    }
+
+    // TODO: figure out why \u6c37 broke and \u006c37 didn't
+    #[test]
+    fn test_character_unicode() {
+        let goal1 = Ok(("", Element::Character('氷')));
+        assert_eq!(parsers::character("\\u6c37"), goal1);
+        let goal2 = Ok(("", Element::Character('氷')));
+        assert_eq!(parsers::character("\\00u6c37"), goal2);
+    }
+
+    // TODO: figure out why \u01f600 works and \u1f600 doesn't
+    #[test]
+    fn test_character_unicode_emoji() {
+        let goal1 = Ok(("", Element::Character('😀')));
+        assert_eq!(parsers::character("\\u01f600"), goal1);
     }
 }
